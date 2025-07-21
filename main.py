@@ -12,8 +12,6 @@ from PIL import Image
 import speech_recognition as sr
 import google.generativeai as genai
 from dotenv import load_dotenv
-import spacy
-from transformers import pipeline
 import requests
 
 # --- Environment Setup ---
@@ -25,9 +23,7 @@ if not hugging_token: raise Exception("Missing HuggingFace key")
 genai.configure(api_key=gemini_api_key)
 
 # --- Load Models Once ---
-gemini_model = genai.GenerativeModel("gemini-2.5-flash")
-nlp = spacy.load("en_core_web_sm")
-sent_analyzer = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+# Load models on request to save memory
 
 # --- App Setup ---
 app = FastAPI()
@@ -55,6 +51,7 @@ def process_audio(audio_file: UploadFile):
     os.remove(temp_path)
     return text
 
+
 def process_image(image_file: UploadFile):
     image = Image.open(BytesIO(image_file.file.read()))
     prompt = (
@@ -64,7 +61,10 @@ def process_image(image_file: UploadFile):
     response = gemini_model.generate_content([prompt, image])
     return response.text
 
+
 def nlp_extraction(memories):
+    import spacy
+    nlp = spacy.load("en_core_web_sm")
     structured = []
     for mem in memories:
         doc = nlp(mem)
@@ -74,7 +74,10 @@ def nlp_extraction(memories):
         structured.append({"original": mem, "events": events, "entities": entities, "keywords": keywords})
     return structured
 
+
 def sentiment_analysis(structured):
+    from transformers import pipeline
+    sent_analyzer = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
     out = []
     for item in structured:
         result = sent_analyzer(
@@ -86,6 +89,7 @@ def sentiment_analysis(structured):
         out.append(item)
     return out
 
+
 def prepare_llm_prompt(structured):
     prompt = "Here are some personal memories:\n\n"
     for idx, mem in enumerate(structured, 1):
@@ -96,26 +100,29 @@ def prepare_llm_prompt(structured):
         prompt += f"   Sentiment: {mem.get('sentiment','')} ({mem.get('sentiment_score',0):.2f})\n\n"
     return prompt
 
+
 def run_llm_story(prompt):
-    full_prompt = f"{prompt}\n\nPlease create a mosaic story or synthesis that weaves together these memories."
-    response = gemini_model.generate_content(full_prompt)
+    response = genai.GenerativeModel("gemini-2.5-flash").generate_content(f"{prompt}\n\nPlease create a mosaic story or synthesis that weaves together these memories.")
     return response.text
+
 
 def generate_title(story):
     prompt = (
         f"{story}\n\nBased on the story above, generate a concise, creative title for this memory mosaic. "
         "Respond with only the title, no extra text."
     )
-    response = gemini_model.generate_content(prompt)
+    response = genai.GenerativeModel("gemini-2.5-flash").generate_content(prompt)
     return response.text.strip()
+
 
 def generate_image_prompt(story):
     prompt = (
         f"{story}\n\nBased on the story above, create ONE detailed, vivid, and visually clear image prompt "
         "for AI image generation. Respond with only the prompt."
     )
-    response = gemini_model.generate_content(prompt)
+    response = genai.GenerativeModel("gemini-2.5-flash").generate_content(prompt)
     return response.text.strip()
+
 
 def generate_image_from_prompt(image_prompt, img_save_path):
     url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
@@ -130,7 +137,9 @@ def generate_image_from_prompt(image_prompt, img_save_path):
     else:
         raise Exception(f"Image gen error: {response.text}")
 
+
 # --- Main POST Endpoint ---
+
 
 @app.post("/api/memory")
 async def create_memory(
@@ -142,6 +151,7 @@ async def create_memory(
     if description.strip():
         memories.append(description.strip())
 
+
     if audioFile and audioFile.filename:
         try:
             audio_text = process_audio(audioFile)
@@ -150,6 +160,7 @@ async def create_memory(
         except Exception as e:
             return {"error": f"Audio processing failed: {str(e)}"}
 
+
     if imageFile and imageFile.filename:
         try:
             image_text = process_image(imageFile)
@@ -157,6 +168,7 @@ async def create_memory(
                 memories.append(image_text.strip())
         except Exception as e:
             return {"error": f"Image analysis failed: {str(e)}"}
+
 
     try:
         structured = nlp_extraction(memories)
@@ -175,10 +187,14 @@ async def create_memory(
             "generated_image_url": image_url
         }
 
+
     except Exception as e:
         return {"error": f"Pipeline failed: {str(e)}"}
+
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+# Reduced memory usage version with on-demand model loading etc.
