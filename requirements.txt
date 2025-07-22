@@ -1,4 +1,3 @@
-# Core FastAPI dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-dotenv==1.0.0
@@ -6,12 +5,5 @@ pydantic==2.5.0
 aiofiles==23.2.0
 requests==2.31.0
 Pillow==10.1.0
-
-# Audio processing
 SpeechRecognition==3.10.0
-
-# Google Gemini
 google-generativeai==0.8.3
-
-# Basic NLP without heavy models
-nltk==3.8.1
