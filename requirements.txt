@@ -1,14 +1,13 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-pydantic
-aiofiles
-requests
-Pillow
-SpeechRecognition==3.14.3
-google-generativeai
-transformers
-torch
-spacy==3.7.4
-spacy-transformers>=1.2.5
-en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-dotenv==1.0.0
+pydantic==2.5.0
+aiofiles==23.2.0
+requests==2.31.0
+Pillow==10.1.0
+SpeechRecognition==3.10.0
+google-generativeai==0.3.2
+transformers==4.36.0
+torch==2.1.1+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
+spacy==3.7.2
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
