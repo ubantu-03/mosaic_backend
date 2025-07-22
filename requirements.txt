@@ -1,3 +1,4 @@
+# Core FastAPI dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-dotenv==1.0.0
@@ -5,9 +6,17 @@ pydantic==2.5.0
 aiofiles==23.2.0
 requests==2.31.0
 Pillow==10.1.0
+
+# Audio processing
 SpeechRecognition==3.10.0
-google-generativeai==0.3.2
-transformers==4.36.0
-torch==2.1.1+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
+
+# Google Gemini
+google-generativeai==0.8.3
+
+# NLP - Minimal setup
+transformers==4.35.2
+torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
 spacy==3.7.2
+
+# Install spaCy model after other packages
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
