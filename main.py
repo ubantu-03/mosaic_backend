@@ -12,9 +12,8 @@ from PIL import Image
 import speech_recognition as sr
 import google.generativeai as genai
 from dotenv import load_dotenv
-import spacy
-from transformers import pipeline
 import requests
+import re
 
 # --- Environment Setup ---
 load_dotenv()
@@ -31,13 +30,7 @@ genai.configure(api_key=gemini_api_key)
 # --- Load Models Once ---
 try:
     gemini_model = genai.GenerativeModel("gemini-2.0-flash-exp")
-    nlp = spacy.load("en_core_web_sm")
-    sent_analyzer = pipeline(
-        "zero-shot-classification", 
-        model="facebook/bart-large-mnli",
-        device=-1  # Force CPU usage for free tier
-    )
-    print("All models loaded successfully")
+    print("Gemini model loaded successfully")
 except Exception as e:
     print(f"Model loading error: {e}")
     raise
@@ -86,36 +79,52 @@ def process_image(image_file: UploadFile):
     response = gemini_model.generate_content([prompt, image])
     return response.text
 
-def nlp_extraction(memories):
-    """Extract structured information from memories"""
+def simple_nlp_extraction(memories):
+    """Simple NLP extraction without heavy models"""
     structured = []
     for mem in memories:
-        doc = nlp(mem)
-        events = [sent.text for sent in doc.sents]
-        entities = [ent.text for ent in doc.ents]
-        keywords = [token.lemma_ for token in doc if token.is_alpha and not token.is_stop]
+        # Simple sentence splitting
+        sentences = re.split(r'[.!?]+', mem)
+        events = [s.strip() for s in sentences if s.strip()]
+        
+        # Simple entity extraction using regex patterns
+        entities = []
+        # Find capitalized words (potential proper nouns)
+        entities.extend(re.findall(r'\b[A-Z][a-z]+\b', mem))
+        # Find dates
+        entities.extend(re.findall(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', mem))
+        entities.extend(re.findall(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b', mem))
+        
+        # Simple keyword extraction (remove common words)
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+        words = re.findall(r'\b\w+\b', mem.lower())
+        keywords = [word for word in words if word not in stop_words and len(word) > 2]
+        
         structured.append({
             "original": mem, 
             "events": events, 
-            "entities": entities, 
-            "keywords": keywords
+            "entities": list(set(entities)), 
+            "keywords": list(set(keywords))
         })
     return structured
 
-def sentiment_analysis(structured):
-    """Analyze sentiment of structured memories"""
+def simple_sentiment_analysis(structured):
+    """Simple sentiment analysis using Gemini"""
     out = []
     for item in structured:
         try:
-            result = sent_analyzer(
-                item["original"],
-                candidate_labels=["positive", "neutral", "negative"]
-            )
-            item["sentiment"] = result["labels"][0]
-            item["sentiment_score"] = float(result["scores"][0])
+            prompt = f"Analyze the sentiment of this text and respond with only one word: 'positive', 'negative', or 'neutral'. Text: {item['original']}"
+            response = gemini_model.generate_content(prompt)
+            sentiment = response.text.strip().lower()
+            
+            # Fallback to neutral if not recognized
+            if sentiment not in ['positive', 'negative', 'neutral']:
+                sentiment = 'neutral'
+                
+            item["sentiment"] = sentiment
+            item["sentiment_score"] = 0.8 if sentiment != 'neutral' else 0.5
         except Exception as e:
             print(f"Sentiment analysis error: {e}")
-            # Fallback to neutral if analysis fails
             item["sentiment"] = "neutral"
             item["sentiment_score"] = 0.5
         out.append(item)
@@ -126,32 +135,32 @@ def prepare_llm_prompt(structured):
     prompt = "Here are some personal memories:\n\n"
     for idx, mem in enumerate(structured, 1):
         prompt += f"{idx}. {mem['original']}\n"
-        prompt += f"   Events: {mem['events']}\n"
-        prompt += f"   Entities: {mem['entities']}\n"
-        prompt += f"   Keywords: {mem['keywords']}\n"
+        prompt += f"   Key Events: {', '.join(mem['events'])}\n"
+        prompt += f"   Notable Entities: {', '.join(mem['entities'])}\n"
+        prompt += f"   Keywords: {', '.join(mem['keywords'][:10])}\n"  # Limit keywords
         prompt += f"   Sentiment: {mem.get('sentiment','')} ({mem.get('sentiment_score',0):.2f})\n\n"
     return prompt
 
 def run_llm_story(prompt):
     """Generate story using Gemini LLM"""
-    full_prompt = f"{prompt}\n\nPlease create a mosaic story or synthesis that weaves together these memories."
+    full_prompt = f"{prompt}\n\nPlease create a beautiful, cohesive story or narrative that weaves together these memories in a meaningful way. Make it engaging and emotionally resonant."
     response = gemini_model.generate_content(full_prompt)
     return response.text
 
 def generate_title(story):
     """Generate title for the story"""
     prompt = (
-        f"{story}\n\nBased on the story above, generate a concise, creative title for this memory mosaic. "
-        "Respond with only the title, no extra text."
+        f"Based on this story, generate a short, creative, and memorable title (maximum 8 words):\n\n{story}\n\n"
+        "Respond with only the title, no quotes or extra text."
     )
     response = gemini_model.generate_content(prompt)
-    return response.text.strip()
+    return response.text.strip().replace('"', '').replace("'", '')
 
 def generate_image_prompt(story):
     """Generate image prompt from story"""
     prompt = (
-        f"{story}\n\nBased on the story above, create ONE detailed, vivid, and visually clear image prompt "
-        "for AI image generation. Respond with only the prompt."
+        f"Based on this story, create a detailed, artistic image prompt for AI generation that captures the essence and mood:\n\n{story}\n\n"
+        "Make it visually rich and specific. Respond with only the image prompt."
     )
     response = gemini_model.generate_content(prompt)
     return response.text.strip()
@@ -167,23 +176,38 @@ def generate_image_from_prompt(image_prompt, img_save_path):
     # Add retry logic for HuggingFace model loading
     max_retries = 3
     for attempt in range(max_retries):
-        response = requests.post(url, headers=headers, json={"inputs": image_prompt})
-        if response.ok:
-            img = Image.open(BytesIO(response.content))
-            img.save(img_save_path)
-            return
-        elif "loading" in response.text.lower():
-            print(f"Model loading, attempt {attempt + 1}/{max_retries}")
+        try:
+            response = requests.post(url, headers=headers, json={"inputs": image_prompt}, timeout=60)
+            if response.ok:
+                img = Image.open(BytesIO(response.content))
+                img.save(img_save_path)
+                return
+            elif "loading" in response.text.lower():
+                print(f"Model loading, attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(15)  # Wait for model to load
+                continue
+            else:
+                print(f"Image generation error: {response.text}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(10)
+                    continue
+                else:
+                    raise Exception(f"Image generation failed: {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"Request error: {e}")
             if attempt < max_retries - 1:
                 import time
-                time.sleep(10)  # Wait for model to load
-            continue
-        else:
-            raise Exception(f"Image generation error: {response.text}")
+                time.sleep(10)
+                continue
+            else:
+                raise Exception(f"Failed to generate image: {e}")
     
     raise Exception("Failed to generate image after retries")
 
-# --- Health Check Endpoint ---
+# --- Health Check Endpoints ---
 @app.get("/")
 async def health_check():
     return {"status": "healthy", "message": "Memory Mosaic API is running"}
@@ -213,6 +237,7 @@ async def create_memory(
             if audio_text.strip():
                 memories.append(audio_text.strip())
         except Exception as e:
+            print(f"Audio processing error: {e}")
             return {"error": f"Audio processing failed: {str(e)}"}
 
     # Process image file
@@ -222,21 +247,30 @@ async def create_memory(
             if image_text.strip():
                 memories.append(image_text.strip())
         except Exception as e:
+            print(f"Image processing error: {e}")
             return {"error": f"Image analysis failed: {str(e)}"}
 
     if not memories:
         return {"error": "No valid memories provided"}
 
     try:
-        # Process memories through the pipeline
-        structured = nlp_extraction(memories)
-        sentimental = sentiment_analysis(structured)
+        # Process memories through the simplified pipeline
+        print("Processing memories through NLP pipeline...")
+        structured = simple_nlp_extraction(memories)
+        sentimental = simple_sentiment_analysis(structured)
         llm_prompt = prepare_llm_prompt(sentimental)
+        
+        print("Generating story...")
         story = run_llm_story(llm_prompt)
+        
+        print("Generating title...")
         title = generate_title(story)
+        
+        print("Generating image prompt...")
         image_prompt = generate_image_prompt(story)
         
         # Generate and save image
+        print("Generating image...")
         image_filename = f"memory_{uuid.uuid4().hex}.png"
         image_save_path = os.path.join(STATIC_DIR, image_filename)
         generate_image_from_prompt(image_prompt, image_save_path)
@@ -246,11 +280,13 @@ async def create_memory(
             "title": title,
             "story": story,
             "generated_image_url": image_url,
-            "image_prompt": image_prompt
+            "image_prompt": image_prompt,
+            "memories_processed": len(memories)
         }
 
     except Exception as e:
-        return {"error": f"Pipeline failed: {str(e)}"}
+        print(f"Pipeline error: {e}")
+        return {"error": f"Processing failed: {str(e)}"}
 
 # For local development
 if __name__ == "__main__":
