@@ -14,6 +14,16 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import requests
 import re
+import nltk
+from collections import Counter
+
+# Download NLTK data on startup
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    nltk.download('vader_lexicon', quiet=True)
+except:
+    pass  # Continue without NLTK if download fails
 
 # --- Environment Setup ---
 load_dotenv()
@@ -80,55 +90,98 @@ def process_image(image_file: UploadFile):
     return response.text
 
 def simple_nlp_extraction(memories):
-    """Simple NLP extraction without heavy models"""
+    """Enhanced NLP extraction using NLTK"""
     structured = []
-    for mem in memories:
-        # Simple sentence splitting
-        sentences = re.split(r'[.!?]+', mem)
-        events = [s.strip() for s in sentences if s.strip()]
+    
+    try:
+        from nltk.tokenize import sent_tokenize, word_tokenize
+        from nltk.corpus import stopwords
+        from nltk.sentiment import SentimentIntensityAnalyzer
         
-        # Simple entity extraction using regex patterns
-        entities = []
-        # Find capitalized words (potential proper nouns)
-        entities.extend(re.findall(r'\b[A-Z][a-z]+\b', mem))
-        # Find dates
-        entities.extend(re.findall(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', mem))
-        entities.extend(re.findall(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b', mem))
+        stop_words = set(stopwords.words('english'))
+        sia = SentimentIntensityAnalyzer()
         
-        # Simple keyword extraction (remove common words)
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
-        words = re.findall(r'\b\w+\b', mem.lower())
-        keywords = [word for word in words if word not in stop_words and len(word) > 2]
-        
-        structured.append({
-            "original": mem, 
-            "events": events, 
-            "entities": list(set(entities)), 
-            "keywords": list(set(keywords))
-        })
+        for mem in memories:
+            # Sentence tokenization
+            sentences = sent_tokenize(mem)
+            events = [s.strip() for s in sentences if s.strip()]
+            
+            # Entity extraction using regex patterns
+            entities = []
+            entities.extend(re.findall(r'\b[A-Z][a-z]+\b', mem))
+            entities.extend(re.findall(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', mem))
+            entities.extend(re.findall(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b', mem))
+            
+            # Keyword extraction
+            words = word_tokenize(mem.lower())
+            keywords = [word for word in words if word.isalnum() and word not in stop_words and len(word) > 2]
+            keyword_freq = Counter(keywords)
+            top_keywords = [word for word, count in keyword_freq.most_common(10)]
+            
+            # Sentiment analysis
+            sentiment_scores = sia.polarity_scores(mem)
+            if sentiment_scores['compound'] >= 0.05:
+                sentiment = 'positive'
+            elif sentiment_scores['compound'] <= -0.05:
+                sentiment = 'negative'
+            else:
+                sentiment = 'neutral'
+            
+            structured.append({
+                "original": mem,
+                "events": events,
+                "entities": list(set(entities)),
+                "keywords": top_keywords,
+                "sentiment": sentiment,
+                "sentiment_score": sentiment_scores['compound']
+            })
+    
+    except ImportError:
+        # Fallback to simple regex-based extraction
+        for mem in memories:
+            sentences = re.split(r'[.!?]+', mem)
+            events = [s.strip() for s in sentences if s.strip()]
+            
+            entities = []
+            entities.extend(re.findall(r'\b[A-Z][a-z]+\b', mem))
+            entities.extend(re.findall(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', mem))
+            entities.extend(re.findall(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b', mem))
+            
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+            words = re.findall(r'\b\w+\b', mem.lower())
+            keywords = [word for word in words if word not in stop_words and len(word) > 2]
+            
+            structured.append({
+                "original": mem,
+                "events": events,
+                "entities": list(set(entities)),
+                "keywords": list(set(keywords)),
+                "sentiment": "neutral",
+                "sentiment_score": 0.5
+            })
+    
     return structured
 
 def simple_sentiment_analysis(structured):
-    """Simple sentiment analysis using Gemini"""
-    out = []
+    """Use Gemini for sentiment analysis as fallback"""
     for item in structured:
-        try:
-            prompt = f"Analyze the sentiment of this text and respond with only one word: 'positive', 'negative', or 'neutral'. Text: {item['original']}"
-            response = gemini_model.generate_content(prompt)
-            sentiment = response.text.strip().lower()
-            
-            # Fallback to neutral if not recognized
-            if sentiment not in ['positive', 'negative', 'neutral']:
-                sentiment = 'neutral'
+        if 'sentiment' not in item or item['sentiment'] == 'neutral':
+            try:
+                prompt = f"Analyze the sentiment of this text and respond with only one word: 'positive', 'negative', or 'neutral'. Text: {item['original']}"
+                response = gemini_model.generate_content(prompt)
+                sentiment = response.text.strip().lower()
                 
-            item["sentiment"] = sentiment
-            item["sentiment_score"] = 0.8 if sentiment != 'neutral' else 0.5
-        except Exception as e:
-            print(f"Sentiment analysis error: {e}")
-            item["sentiment"] = "neutral"
-            item["sentiment_score"] = 0.5
-        out.append(item)
-    return out
+                if sentiment not in ['positive', 'negative', 'neutral']:
+                    sentiment = 'neutral'
+                    
+                item["sentiment"] = sentiment
+                item["sentiment_score"] = 0.8 if sentiment != 'neutral' else 0.5
+            except Exception as e:
+                print(f"Sentiment analysis error: {e}")
+                item["sentiment"] = "neutral"
+                item["sentiment_score"] = 0.5
+    
+    return structured
 
 def prepare_llm_prompt(structured):
     """Prepare prompt for LLM story generation"""
@@ -137,7 +190,7 @@ def prepare_llm_prompt(structured):
         prompt += f"{idx}. {mem['original']}\n"
         prompt += f"   Key Events: {', '.join(mem['events'])}\n"
         prompt += f"   Notable Entities: {', '.join(mem['entities'])}\n"
-        prompt += f"   Keywords: {', '.join(mem['keywords'][:10])}\n"  # Limit keywords
+        prompt += f"   Keywords: {', '.join(mem['keywords'][:10])}\n"
         prompt += f"   Sentiment: {mem.get('sentiment','')} ({mem.get('sentiment_score',0):.2f})\n\n"
     return prompt
 
@@ -173,7 +226,6 @@ def generate_image_from_prompt(image_prompt, img_save_path):
         "Content-Type": "application/json"
     }
     
-    # Add retry logic for HuggingFace model loading
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -186,7 +238,7 @@ def generate_image_from_prompt(image_prompt, img_save_path):
                 print(f"Model loading, attempt {attempt + 1}/{max_retries}")
                 if attempt < max_retries - 1:
                     import time
-                    time.sleep(15)  # Wait for model to load
+                    time.sleep(15)
                 continue
             else:
                 print(f"Image generation error: {response.text}")
@@ -254,7 +306,6 @@ async def create_memory(
         return {"error": "No valid memories provided"}
 
     try:
-        # Process memories through the simplified pipeline
         print("Processing memories through NLP pipeline...")
         structured = simple_nlp_extraction(memories)
         sentimental = simple_sentiment_analysis(structured)
@@ -269,7 +320,6 @@ async def create_memory(
         print("Generating image prompt...")
         image_prompt = generate_image_prompt(story)
         
-        # Generate and save image
         print("Generating image...")
         image_filename = f"memory_{uuid.uuid4().hex}.png"
         image_save_path = os.path.join(STATIC_DIR, image_filename)
